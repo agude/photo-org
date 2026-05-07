@@ -46,20 +46,23 @@ def main(source: Path, output: Path | None, include_date_folders: bool):
         if path.suffix.lower() not in media_extensions:
             continue
 
-        # Get immediate parent folder as album name
-        album_name = path.parent.name
-
-        # Skip if it's a date folder
-        if not include_date_folders and is_date_folder(album_name):
-            skipped_folders.add(album_name)
-            continue
+        relative_path = path.relative_to(source)
 
         # Skip root-level files
         if path.parent == source:
             continue
 
-        relative_path = str(path.relative_to(source))
-        album_map[relative_path].append(album_name)
+        # Get top-level folder as album name (first component of relative path)
+        album_name = relative_path.parts[0]
+
+        # Skip if it's a date folder or ALL_PHOTOS (which has no album)
+        if album_name == "ALL_PHOTOS":
+            continue
+        if not include_date_folders and is_date_folder(album_name):
+            skipped_folders.add(album_name)
+            continue
+
+        album_map[str(relative_path)].append(album_name)
 
     result = dict(album_map)
 
