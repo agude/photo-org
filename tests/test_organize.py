@@ -15,6 +15,8 @@ from photo_org.organize import (
     generate_filename,
     compute_destination,
     file_hash,
+    parse_date_from_filename,
+    write_exif_date,
 )
 
 
@@ -83,6 +85,78 @@ class TestFileHash:
         f1.write_bytes(b"content 1")
         f2.write_bytes(b"content 2")
         assert file_hash(f1) != file_hash(f2)
+
+
+class TestParseDateFromFilename:
+    def test_yyyymmdd_hhmmss_dashes(self):
+        """Pattern: 20130728-11-58-57"""
+        dt = parse_date_from_filename("20130728-11-58-57--The Dress.jpg")
+        assert dt == datetime(2013, 7, 28, 11, 58, 57)
+
+    def test_yyyymmdd_hhmmss_compact(self):
+        """Pattern: 20130728-115857"""
+        dt = parse_date_from_filename("20130728-115857.jpg")
+        assert dt == datetime(2013, 7, 28, 11, 58, 57)
+
+    def test_yyyy_mm_dd_hh_mm_ss_dots(self):
+        """Pattern: 2012-07-21 16.12.48"""
+        dt = parse_date_from_filename("2012-07-21 16.12.48.jpg")
+        assert dt == datetime(2012, 7, 21, 16, 12, 48)
+
+    def test_yyyy_mm_dd_only(self):
+        """Pattern: 2012-07-21 (date only, time defaults to 00:00:00)"""
+        dt = parse_date_from_filename("2012-07-21 vacation.jpg")
+        assert dt == datetime(2012, 7, 21, 0, 0, 0)
+
+    def test_img_pattern(self):
+        """Pattern: IMG_20130728_115857"""
+        dt = parse_date_from_filename("IMG_20130728_115857.jpg")
+        assert dt == datetime(2013, 7, 28, 11, 58, 57)
+
+    def test_vid_pattern(self):
+        """Pattern: VID_20191223_121236"""
+        dt = parse_date_from_filename("VID_20191223_121236.mp4")
+        assert dt == datetime(2019, 12, 23, 12, 12, 36)
+
+    def test_no_date_in_filename(self):
+        """Files without recognizable date patterns return None."""
+        assert parse_date_from_filename("vacation_photo.jpg") is None
+        assert parse_date_from_filename("IMG_1234.jpg") is None
+
+    def test_invalid_date_returns_none(self):
+        """Invalid dates (like month 13) should return None."""
+        assert parse_date_from_filename("20131328-115857.jpg") is None
+
+
+class TestWriteExifDate:
+    def test_writes_date_to_file(self, tmp_path):
+        """write_exif_date should call exiftool with correct arguments."""
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"fake jpg")
+        dt = datetime(2023, 12, 25, 14, 30, 45)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            result = write_exif_date(f, dt)
+
+        assert result is True
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert "exiftool" in call_args
+        assert "-overwrite_original" in call_args
+        assert "-DateTimeOriginal=2023:12:25 14:30:45" in call_args
+
+    def test_returns_false_on_failure(self, tmp_path):
+        """write_exif_date should return False if exiftool fails."""
+        f = tmp_path / "photo.jpg"
+        f.write_bytes(b"fake jpg")
+        dt = datetime(2023, 12, 25, 14, 30, 45)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)
+            result = write_exif_date(f, dt)
+
+        assert result is False
 
 
 class TestBatchExtractDates:

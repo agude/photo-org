@@ -13,6 +13,48 @@ import click
 
 EXIFTOOL_BATCH_SIZE = 100
 
+# Patterns for parsing dates from filenames
+FILENAME_DATE_PATTERNS = [
+    # 20130728-11-58-57 or 20130728-115857
+    (r"(\d{4})(\d{2})(\d{2})-(\d{2})-?(\d{2})-?(\d{2})", "%Y%m%d%H%M%S"),
+    # 2012-07-21 16.12.48 or 2012-07-21_16.12.48
+    (r"(\d{4})-(\d{2})-(\d{2})[\s_](\d{2})\.(\d{2})\.(\d{2})", "%Y%m%d%H%M%S"),
+    # 2012-07-21 (date only)
+    (r"(\d{4})-(\d{2})-(\d{2})", "%Y%m%d"),
+    # IMG_20130728_115857
+    (r"IMG_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", "%Y%m%d%H%M%S"),
+    # VID_20191223_121236
+    (r"VID_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})", "%Y%m%d%H%M%S"),
+]
+
+
+def parse_date_from_filename(filename: str) -> datetime | None:
+    """Try to extract a date from the filename."""
+    for pattern, fmt in FILENAME_DATE_PATTERNS:
+        match = re.search(pattern, filename)
+        if match:
+            try:
+                date_str = "".join(match.groups())
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def write_exif_date(path: Path, dt: datetime) -> bool:
+    """Write DateTimeOriginal to file using exiftool."""
+    date_str = dt.strftime("%Y:%m:%d %H:%M:%S")
+    try:
+        result = subprocess.run(
+            ["exiftool", "-overwrite_original", f"-DateTimeOriginal={date_str}", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
 
 def batch_extract_dates(files: list[Path]) -> dict[Path, datetime | None]:
     """Extract DateTimeOriginal from multiple files using batch exiftool call.
@@ -204,11 +246,24 @@ def main(staging: Path, archive: Path, album_map: Path | None, dry_run: bool, lo
     dates = batch_extract_dates(files)
     log_action(f"Extracted dates for {sum(1 for d in dates.values() if d)} files")
 
-    stats = {"moved": 0, "skipped_dup": 0, "no_date": 0, "hardlinked": 0}
+    stats = {"moved": 0, "skipped_dup": 0, "no_date": 0, "hardlinked": 0, "exif_written": 0}
 
     for source in files:
         description = extract_description(source.name)
         dt = dates.get(source)
+
+        # Fallback: try to parse date from filename
+        if dt is None:
+            dt = parse_date_from_filename(source.name)
+            if dt is not None:
+                if dry_run:
+                    log_action(f"WOULD WRITE EXIF: {source} <- {dt.strftime('%Y:%m:%d %H:%M:%S')}")
+                else:
+                    if write_exif_date(source, dt):
+                        log_action(f"WRITE EXIF: {source} <- {dt.strftime('%Y:%m:%d %H:%M:%S')}")
+                        stats["exif_written"] += 1
+                    else:
+                        log_action(f"EXIF WRITE FAILED: {source}")
 
         if dt is None:
             # No date - move to no-date folder
@@ -287,7 +342,8 @@ def main(staging: Path, archive: Path, album_map: Path | None, dry_run: bool, lo
             stats["hardlinked"] += 1
 
     log_action(f"Done: {stats['moved']} moved, {stats['skipped_dup']} duplicates skipped, "
-               f"{stats['no_date']} no-date, {stats['hardlinked']} album links created")
+               f"{stats['no_date']} no-date, {stats['hardlinked']} album links created, "
+               f"{stats['exif_written']} EXIF dates written")
 
     if log_file:
         log_file.close()
