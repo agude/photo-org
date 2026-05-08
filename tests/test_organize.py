@@ -129,8 +129,8 @@ class TestParseDateFromFilename:
 
 
 class TestWriteExifDate:
-    def test_writes_date_to_file(self, tmp_path):
-        """write_exif_date should call exiftool with correct arguments."""
+    def test_writes_date_to_image(self, tmp_path):
+        """write_exif_date should use DateTimeOriginal for images."""
         f = tmp_path / "photo.jpg"
         f.write_bytes(b"fake jpg")
         dt = datetime(2023, 12, 25, 14, 30, 45)
@@ -145,6 +145,21 @@ class TestWriteExifDate:
         assert "exiftool" in call_args
         assert "-overwrite_original" in call_args
         assert "-DateTimeOriginal=2023:12:25 14:30:45" in call_args
+
+    def test_writes_date_to_video(self, tmp_path):
+        """write_exif_date should use QuickTime tags for videos."""
+        f = tmp_path / "video.mp4"
+        f.write_bytes(b"fake mp4")
+        dt = datetime(2023, 12, 25, 14, 30, 45)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            result = write_exif_date(f, dt)
+
+        assert result is True
+        call_args = mock_run.call_args[0][0]
+        assert "-QuickTime:CreateDate=2023:12:25 14:30:45" in call_args
+        assert "-QuickTime:ModifyDate=2023:12:25 14:30:45" in call_args
 
     def test_returns_false_on_failure(self, tmp_path):
         """write_exif_date should return False if exiftool fails."""

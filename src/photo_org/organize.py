@@ -41,23 +41,46 @@ def parse_date_from_filename(filename: str) -> datetime | None:
     return None
 
 
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp"}
+
+
 def write_exif_date(path: Path, dt: datetime) -> bool:
-    """Write DateTimeOriginal to file using exiftool."""
+    """Write date to file using exiftool.
+
+    For images: writes DateTimeOriginal
+    For videos: writes QuickTime CreateDate and ModifyDate
+    """
     date_str = dt.strftime("%Y:%m:%d %H:%M:%S")
+    ext = path.suffix.lower()
+
+    if ext in VIDEO_EXTENSIONS:
+        # Video files use QuickTime metadata
+        args = [
+            "exiftool", "-overwrite_original",
+            f"-QuickTime:CreateDate={date_str}",
+            f"-QuickTime:ModifyDate={date_str}",
+            str(path),
+        ]
+    else:
+        # Image files use EXIF
+        args = [
+            "exiftool", "-overwrite_original",
+            f"-DateTimeOriginal={date_str}",
+            str(path),
+        ]
+
     try:
-        result = subprocess.run(
-            ["exiftool", "-overwrite_original", f"-DateTimeOriginal={date_str}", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         return False
 
 
 def batch_extract_dates(files: list[Path]) -> dict[Path, datetime | None]:
-    """Extract DateTimeOriginal from multiple files using batch exiftool call.
+    """Extract dates from multiple files using batch exiftool call.
+
+    For images: reads DateTimeOriginal
+    For videos: reads QuickTime:CreateDate
 
     Much faster than per-file calls since exiftool only starts once per batch.
     """
@@ -70,8 +93,10 @@ def batch_extract_dates(files: list[Path]) -> dict[Path, datetime | None]:
     for i in range(0, len(files), EXIFTOOL_BATCH_SIZE):
         batch = files[i:i + EXIFTOOL_BATCH_SIZE]
         try:
+            # Request both image and video date tags
             proc = subprocess.run(
-                ["exiftool", "-json", "-DateTimeOriginal", *[str(f) for f in batch]],
+                ["exiftool", "-json", "-DateTimeOriginal", "-QuickTime:CreateDate",
+                 *[str(f) for f in batch]],
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -82,7 +107,8 @@ def batch_extract_dates(files: list[Path]) -> dict[Path, datetime | None]:
             data = json.loads(proc.stdout)
             for entry in data:
                 source_file = Path(entry.get("SourceFile", ""))
-                date_str = entry.get("DateTimeOriginal")
+                # Try EXIF first (images), then QuickTime (videos)
+                date_str = entry.get("DateTimeOriginal") or entry.get("CreateDate")
                 if date_str:
                     try:
                         dt = datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
