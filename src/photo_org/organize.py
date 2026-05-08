@@ -338,6 +338,9 @@ def main(staging: Path, archive: Path, album_map: Path | None, dry_run: bool, lo
         else:
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(source, dest)
+            # Set file mtime to match photo date
+            timestamp = dt.timestamp()
+            os.utime(dest, (timestamp, timestamp))
             log_action(f"MOVE: {source} -> {dest}")
         stats["moved"] += 1
 

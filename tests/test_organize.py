@@ -174,6 +174,43 @@ class TestWriteExifDate:
         assert result is False
 
 
+class TestMtimeSetting:
+    def test_mtime_set_to_photo_date(self, tmp_path):
+        """After moving, file mtime should match the photo date."""
+        import os
+        from photo_org.organize import main
+        from click.testing import CliRunner
+
+        # Set up staging and archive
+        staging = tmp_path / "staging"
+        archive = tmp_path / "archive"
+        staging.mkdir()
+        (archive / "by-date").mkdir(parents=True)
+        (archive / "no-date").mkdir()
+        (archive / "albums").mkdir()
+
+        # Create a test file with a parseable filename
+        test_file = staging / "20230725-143000--Test.jpg"
+        test_file.write_bytes(b"fake jpg content")
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "--staging", str(staging),
+            "--archive", str(archive),
+        ])
+
+        assert result.exit_code == 0
+
+        # Find the moved file
+        moved = archive / "by-date" / "2023" / "07" / "25" / "20230725-143000--Test.jpg"
+        assert moved.exists()
+
+        # Check mtime matches the date from filename
+        mtime = os.path.getmtime(moved)
+        expected = datetime(2023, 7, 25, 14, 30, 0).timestamp()
+        assert abs(mtime - expected) < 1  # within 1 second
+
+
 class TestBatchExtractDates:
     def test_parses_exiftool_json_output(self, tmp_path):
         """batch_extract_dates should parse exiftool JSON output correctly."""
