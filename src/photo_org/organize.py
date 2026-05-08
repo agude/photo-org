@@ -11,21 +11,46 @@ from pathlib import Path
 
 import click
 
+EXIFTOOL_BATCH_SIZE = 100
 
-def get_exif_datetime(path: Path) -> datetime | None:
-    """Extract DateTimeOriginal from EXIF using exiftool."""
-    try:
-        result = subprocess.run(
-            ["exiftool", "-DateTimeOriginal", "-s3", "-d", "%Y-%m-%d %H:%M:%S", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return datetime.strptime(result.stdout.strip(), "%Y-%m-%d %H:%M:%S")
-    except (subprocess.TimeoutExpired, ValueError):
-        pass
-    return None
+
+def batch_extract_dates(files: list[Path]) -> dict[Path, datetime | None]:
+    """Extract DateTimeOriginal from multiple files using batch exiftool call.
+
+    Much faster than per-file calls since exiftool only starts once per batch.
+    """
+    if not files:
+        return {}
+
+    result: dict[Path, datetime | None] = {f: None for f in files}
+
+    # Process in batches to avoid command line length limits
+    for i in range(0, len(files), EXIFTOOL_BATCH_SIZE):
+        batch = files[i:i + EXIFTOOL_BATCH_SIZE]
+        try:
+            proc = subprocess.run(
+                ["exiftool", "-json", "-DateTimeOriginal", *[str(f) for f in batch]],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if proc.returncode != 0 or not proc.stdout.strip():
+                continue
+
+            data = json.loads(proc.stdout)
+            for entry in data:
+                source_file = Path(entry.get("SourceFile", ""))
+                date_str = entry.get("DateTimeOriginal")
+                if date_str:
+                    try:
+                        dt = datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
+                        result[source_file] = dt
+                    except ValueError:
+                        pass
+        except (subprocess.TimeoutExpired, json.JSONDecodeError):
+            pass
+
+    return result
 
 
 def file_hash(path: Path) -> str:
@@ -90,15 +115,19 @@ def compute_destination(archive: Path, dt: datetime) -> Path:
     return archive / "by-date" / str(dt.year) / f"{dt.month:02d}" / f"{dt.day:02d}"
 
 
-def find_available_path(dest_dir: Path, filename: str, source_hash: str) -> tuple[Path, bool]:
+def find_available_path(dest_dir: Path, filename: str, source: Path) -> tuple[Path, bool]:
     """Find available path, handling collisions.
 
     Returns (path, is_duplicate) where is_duplicate means exact same file exists.
+    Hashes are computed lazily only when destination exists (collision check).
     """
     dest = dest_dir / filename
 
     if not dest.exists():
         return dest, False
+
+    # Only compute source hash when we need to check for duplicates
+    source_hash = file_hash(source)
 
     # Check if it's the same file
     if file_hash(dest) == source_hash:
@@ -169,13 +198,17 @@ def main(staging: Path, archive: Path, album_map: Path | None, dry_run: bool, lo
     files = [f for f in staging.rglob("*") if f.is_file() and f.suffix.lower() in media_extensions]
 
     log_action(f"Found {len(files)} media files in {staging}")
+    log_action("Extracting dates (batch mode)...")
+
+    # Batch extract all dates upfront - much faster than per-file
+    dates = batch_extract_dates(files)
+    log_action(f"Extracted dates for {sum(1 for d in dates.values() if d)} files")
 
     stats = {"moved": 0, "skipped_dup": 0, "no_date": 0, "hardlinked": 0}
 
     for source in files:
-        source_hash = file_hash(source)
         description = extract_description(source.name)
-        dt = get_exif_datetime(source)
+        dt = dates.get(source)
 
         if dt is None:
             # No date - move to no-date folder
@@ -183,9 +216,12 @@ def main(staging: Path, archive: Path, album_map: Path | None, dry_run: bool, lo
             # Use original filename but sanitize
             dest = dest_dir / source.name
             if dest.exists():
-                if file_hash(dest) == source_hash:
+                # Only hash when we need to check for duplicates
+                if file_hash(dest) == file_hash(source):
                     log_action(f"SKIP (dup): {source} -> {dest}")
                     stats["skipped_dup"] += 1
+                    if not dry_run:
+                        source.unlink()
                     continue
                 # Find unique name
                 stem = dest.stem
@@ -207,7 +243,7 @@ def main(staging: Path, archive: Path, album_map: Path | None, dry_run: bool, lo
         # Has date - compute destination
         dest_dir = compute_destination(archive, dt)
         filename = generate_filename(dt, source.suffix, description)
-        dest, is_dup = find_available_path(dest_dir, filename, source_hash)
+        dest, is_dup = find_available_path(dest_dir, filename, source)
 
         if is_dup:
             log_action(f"SKIP (dup): {source} -> {dest}")
