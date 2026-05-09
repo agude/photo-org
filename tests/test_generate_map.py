@@ -5,7 +5,28 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from photo_org.generate_map import main, is_date_folder
+from photo_org.generate_map import main, is_date_folder, normalize_album_name
+
+
+class TestNormalizeAlbumName:
+    def test_strips_whitespace_conflict(self):
+        name = "2023-04 Melbourne_ADMIN_Aug-07-065248-2024_WhiteSpaceConflict"
+        assert normalize_album_name(name) == "2023-04 Melbourne"
+
+    def test_strips_generic_conflict(self):
+        name = "Album Name_ADMIN_Jan-15-120000-2024_Conflict"
+        assert normalize_album_name(name) == "Album Name"
+
+    def test_strips_tail_character_conflict(self):
+        name = "Wedding Photos_ADMIN_Dec-25-143022-2023_TailCharacterConflict"
+        assert normalize_album_name(name) == "Wedding Photos"
+
+    def test_preserves_normal_album_names(self):
+        assert normalize_album_name("2023-04 Melbourne") == "2023-04 Melbourne"
+        assert normalize_album_name("Wedding Photos") == "Wedding Photos"
+
+    def test_preserves_albums_with_underscores(self):
+        assert normalize_album_name("My_Album_Name") == "My_Album_Name"
 
 
 class TestIsDateFolder:

@@ -19,6 +19,20 @@ def is_date_folder(name: str) -> bool:
     return any(re.match(p, name) for p in patterns)
 
 
+def normalize_album_name(name: str) -> str:
+    """Normalize album name by stripping Google Photos Takeout Helper conflict suffixes.
+
+    Patterns like:
+    - "Album_ADMIN_Aug-07-065248-2024_WhiteSpaceConflict" -> "Album"
+    - "Album_ADMIN_Aug-07-065248-2024_Conflict" -> "Album"
+    - "Album_ADMIN_Aug-07-065248-2024_TailCharacterConflict" -> "Album"
+    """
+    # Pattern: _ADMIN_{Month}-{Day}-{Time}-{Year}_{ConflictType}
+    # ConflictType can be just "Conflict" or "SomethingConflict"
+    pattern = r"_ADMIN_[A-Za-z]{3}-\d{2}-\d{6}-\d{4}_\w*Conflict$"
+    return re.sub(pattern, "", name)
+
+
 @click.command()
 @click.argument("source", type=click.Path(exists=True, path_type=Path))
 @click.option("--output", "-o", type=click.Path(path_type=Path),
@@ -53,7 +67,8 @@ def main(source: Path, output: Path | None, include_date_folders: bool):
             continue
 
         # Get top-level folder as album name (first component of relative path)
-        album_name = relative_path.parts[0]
+        # Normalize to strip Google Photos Takeout Helper conflict suffixes
+        album_name = normalize_album_name(relative_path.parts[0])
 
         # Skip if it's a date folder or ALL_PHOTOS (which has no album)
         if album_name == "ALL_PHOTOS":
